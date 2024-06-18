@@ -62,20 +62,6 @@ Can we model the volatility of gold prices using daily returns? We will utilize 
 
 The ARCH (Autoregressive Conditional Heteroskedasticity) model describes the variance of the current error term as a function of the actual sizes of previous periods' error terms.
 
-\[
-r_t = \mu + \epsilon_t
-\]
-
-\[
-\epsilon_t = \sigma_t \eta_t
-\]
-
-\[
-\sigma_t^2 = \alpha_0 + \sum_{i=1}^q \alpha_i \epsilon_{t-i}^2
-\]
-
-where \(\eta(t) \sim \mathcal{N}(0,1)\).
-
 ## Week 1: Exploratory Data Analysis and Choosing a Research Question
 
 ### Goal
@@ -143,10 +129,6 @@ Convergence diagnostics (\(\hat{R}\), ESS, divergence) were satisfactory.
 
 The GARCH (Generalized Autoregressive Conditional Heteroskedasticity) model extends the ARCH model by incorporating previous volatility values.
 
-\[
-\sigma_t^2 = \alpha_0 + \sum_{i=1}^q \alpha_i \epsilon_{t-i}^2 + \sum_{i=1}^p \beta_i \sigma_{t-i}^2
-\]
-
 ### Prior Choices and Justification
 
 Similar to the ARCH model priors.
@@ -163,7 +145,7 @@ Similar to the ARCH model priors.
 
 ### Goal
 
-- Prepare a concise summary of results
+- Prepare a concise summary of the results
 - Prepare visualization for presentation to a non-technical audience
 
 ### Model Selection
