@@ -1,0 +1,987 @@
+---
+title: "Bayesian Workflow"
+author: "Quan Tran"
+date: "`r Sys.Date()`"
+format:
+  pdf:  
+    geometry:
+    - left=1cm,top=1cm,bottom=1cm,right=7cm
+    code-annotations: none
+    number-sections: true
+editor: source
+---
+
+::: {.content-hidden when-format="pdf"}
+::: {.callout-warning collapse="false"}
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| results: hide
+```
+
+## Getting Started
+
+### How to use this template
+
+This workflow diary template will be used for you to record your experiences, attempts, and results while you apply the Bayesian workflow steps during each week of the seminar. Each section of the template corresponds to a step in the workflow that you will be applying, and specifies a suggested minimum 'goal' that you should aim to complete. How you decide to implement the workflow steps and achieve these goals is completely up to you.
+
+There are no 'wrong' answers here, and you are not being graded on whether you implement the workflow steps 'correctly'. This diary should be a record of your learning and experience with each workflow step, and will evolve as you learn more about the Bayesian workflow. If there are any issues or questions that you have, please record them in the diary so that we can discuss them during the in-person seminar sessions.
+
+Remember that you should be able to re-run, modify, or extend any of your code if requested during the interactive presentations.
+
+### Setting up your Environment
+
+There are a number of packages that you will need throughout this course. If you have any issues completing the setup steps below, please let us know.
+
+```{r}
+library(bayesplot)
+library(ggplot2)
+library(dplyr)
+library(brms)
+library(caret)
+library(caTools)
+library(reshape2)
+library(gridExtra)
+library(rstan)
+library(stringr)
+library(cmdstanr)
+library(ggridges)
+```
+
+#### Stan: `cmdstanr`, `cmdstan`, and `brms`
+
+For estimating Bayesian models in R, we recommend the `cmdstanr` package. You should be familiar with this if you have previously completed BDA. You can install `cmdstanr`, if it is not already installed, by running the following:
+
+```{r}
+# The 'cmdstanr' package is not available on CRAN, so you will need to install it from GitHub:
+if (!requireNamespace("remotes", quietly = TRUE)) {
+  install.packages("remotes")
+}
+if (!requireNamespace("cmdstanr", quietly = TRUE)) {
+  remotes::install_github("stan-dev/cmdstanr")
+}
+```
+
+The `cmdstanr` package is simply a wrapper/interface for the CmdStan command-line interface to Stan, which also needs to be installed. You can run the following code to check whether CmdStan is installed and up-to-date, and install it if necessary:
+
+```{r}
+curr_ver <- cmdstanr::cmdstan_version(error_on_NA = FALSE)
+if (is.null(curr_ver) || curr_ver < cmdstanr:::latest_released_version()) {
+  cmdstanr::check_cmdstan_toolchain(fix = TRUE)
+  cmdstanr::install_cmdstan()
+}
+rm(curr_ver)
+```
+
+A more user-friendly interface to `cmdstanr` is the `brms` package, which provides a formula-based interface to specify Bayesian models. You can install `brms` by running:
+
+```{r}
+if (!requireNamespace("brms", quietly = TRUE)) {
+  install.packages("brms")
+}
+```
+
+#### Post-Processing and Diagnostics
+
+There are also some packages that you are likely to find useful for post-processing and diagnosing your models. These include `bayesplot`, `posterior`, `loo`, and `priorsense`. The first three would have been installed with `brms` above, and you can install `priorsense` by running the following:
+
+```{r}
+# The 'priorsense' package is not available on CRAN
+# so you will need to install it from GitHub:
+if (!requireNamespace("priorsense", quietly = TRUE)) {
+  remotes::install_github("n-kall/priorsense")
+}
+```
+:::
+:::
+
+# Bayesian Workflow
+
+## Loading Data and Preprocessing
+
+In this section, we fetched the data from Yahoo Finance, calculated necessary quantities such as squared returns and daily realized volatility.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Your code here
+gold_prices <- read.csv2("gold_prices_updated.csv", sep = ",")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+gold_prices$Date <- as.Date(str_split_fixed(gold_prices$Date, pattern = " ", n = 2)[, 1])
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+ts = data.frame(day = time(gold_prices$Date))
+gold = data.frame(gold_prices)
+gold
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+for (i in 2:ncol(gold)) {
+  gold[, i] <- as.numeric(as.character(gold[, i]))
+}
+```
+
+# Week 1: Exploratory Data Analysis and Choosing a Research Question
+
+## Goal
+
+After this week, you should have:
+
+-   Setting up your project, for example, using the provided templates
+-   Formulating a research question & finding a dataset
+-   Visualising and getting familiar with characteristics of your data (e.g., range, data types)
+-   Adding your first notes and visualisations to the workflow diary
+-   Picking an initial model & documenting your reasoning and the strategies you used to choose it
+-   Obtaining posterior samples using your initial model with default priors
+-   Documenting what you observe and any issues you encounter in the workflow diary
+
+# Introduction
+
+## Volatility Explained
+
+Volatility is a statistical measure used to evaluate the dispersion of returns for a given security or market index. Usually, riskier securities have higher corresponding volatility.
+
+Volatility also often refers to the amount of uncertainty or risk related to the size of changes in a security’s value. A higher volatility means that a security’s value can potentially be spread out over a larger range of values. This means that the price of the security can change dramatically over a short time period in either direction. A lower volatility means that a security’s value does not fluctuate dramatically, and tends to be more steady.
+
+## Volatility types
+
+There are two types of volatility: Implied volatility and Realized volatility. Implied volatility (IV), also known as projected volatility, is one of the most important metrics for options traders. On the other hand, Realized volatility measures what actually happened in the past.
+
+## Research question
+
+The research question this project attempts to answer is whether we can model the volatility of gold price using on the daily returns. ARCH models will be utilized to achieve this goal since they are commonly employed in modeling financial time series that exhibit time-varying volatility and volatility clustering, i.e. periods of swings interspersed with periods of relative calm.
+
+## ARCH Model
+
+Autoregressive conditional heteroskedasticity (ARCH) model is a statistical model for time series data that describes the variance of the current error term or innovation as a function of the actual sizes of the previous time periods' error terms; often the variance is related to the squares of the previous innovations.
+
+Let r_t the return on day t, we have
+
+$$
+r_t = \mu + \epsilon_t
+$$ where
+
+-   $\mu$ is some unknown constant
+
+-   $\epsilon(t)$ denote the error terms (return residuals, with respect to a mean process), i.e. the series terms.These $a(t)$ are split into a stochastic piece $\eta(t)$ and a time-dependent standard deviation $\sigma_t$ characterizing the typical size of the terms so that
+
+$$
+\epsilon_t = \sigma_t\eta_t
+$$
+
+where
+
+-   $\sigma(t)$ is the time-dependent noise
+
+-   $\eta(t)$ stochastic noise, e.g., $\eta(t) \sim \mathcal{N}(0,1)$
+
+The random variable $\eta(t)$ is a strong white noise process. The series $\sigma_t$ is modeled by
+
+$$
+\sigma_t^2 = \alpha_0 + \sum_{i=1}^q \alpha_i \epsilon_{t-i}^2
+$$ 
+
+where $\alpha_0 > 0$, $\alpha_i \geq 0$, $i > 0$.
+
+In this project, we only explore the ARCH[1] model due to its simplicity. Therefore, the likelihood of the model would be
+
+$$
+r_i \sim \mathcal{N}\left(\mu, \sqrt{\alpha_0 + \alpha_1 * (r_{i-1} - \mu)^2} \right) \quad\textsf{for}  \quad  i\in \{1, ..., t\}
+$$
+where
+
+$r_i$ is the return in percentage on day i and $\mu$ is the average return.
+
+## Exploratory Data Analysis
+
+The dataset is then split into two, training set (304 rows) and testing set (76 rows).
+
+Then we plot some exploratory visualization to gain some overview understanding of how the gold price has been behaving for the few periods in the training set.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Assuming 'data' is your dataframe and has been read from a CSV file
+plot(gold$Date, gold$Close, type='l', col='blue', xlab='Date', ylab='Closing Price (USD)', main='Gold Closing Prices Over Time')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculating daily changes
+gold$Daily_Change <- c(NA, diff(gold$Close))
+
+# Plotting daily changes
+plot(gold$Date, gold$Daily_Change, type='l', col='red', xlab='Date', ylab='Price Change (USD)', main='Daily Changes in Gold Closing Prices')
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculating daily changes
+gold$pc_dif <- c(NA, diff(gold$Close)/gold$Close[-length(gold$Close)]*100)
+
+# Plotting daily changes
+plot(gold$Date, gold$pc_dif, type='l', col='black', xlab='Date', ylab='Percentage Change (%)', main='Daily Percentage Changes in Gold Closing Prices')
+```
+
+As you may notice, there are many big swings in both direction, i.e., there are rises and falls of more than 1% over a sustained period of time, suggesting a volatile market. 
+
+# Week 2: Prior Choice
+
+## Goal
+
+After this week, you should have:
+
+-   Proposed priors for each parameter in your model, with justification
+-   Performed a prior predictive check to ensure that your priors are reasonable
+
+## Prior choices and justification
+
+To ensure stationarity in the model, we constrain the values of the parameters $\alpha$'s to lie within the interval \[0, 1\], with a preference for values closer to 0. Accordingly, we have chosen to use Beta distributions with parameters ($\alpha$ = 2) and ($\beta$ = 3), effectively skewing the distribution towards 0 and accommodating the desired parameter behavior while not making the distribution too narrow. 
+
+For the average return, we assume a weakly informative Normal prior.
+
+$$
+\mu \sim \mathcal{N}(0, 10) \\
+$$
+
+$$
+\alpha_i \sim Beta(2,3)
+$$
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Calculate the index for the split point
+split_index <- floor(0.8 * nrow(gold))
+
+# Split the data sequentially
+train_set <- gold[1:split_index, ]
+test_set <- gold[(split_index + 1):nrow(gold), ]
+
+# Prepare the data for Stan
+train_data <- list(
+  T = nrow(train_set) - 1,
+  r = train_set$pc_dif[-1]
+)
+
+test_data <- list(
+  T = nrow(test_set),
+  r = test_set$pc_dif
+)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+t <- train_set$Date
+pc_dif <- train_set$pc_dif[-1]
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Let's use our best fit model to predict the volatility from the previous day. 
+cal_vol_arch_prior <- function(x) {
+  alpha0 <- 0.4
+  alpha1 <- 0.4
+  sqrt(alpha0 + alpha1*(pc_dif[x-1])^2)
+}
+pred_prior = sapply(2:length(train_set$Close), cal_vol_arch_prior)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# get uncertainties
+cal_vol_CI_arch_prior <- function(x) {
+  mu <- rnorm(3000, 0, 10)
+  alpha0 <- rbeta(3000, 2, 3)
+  alpha1 <- rbeta(3000, 2, 3)
+  return(quantile(mu + sqrt(alpha0 + alpha1 * (pc_dif[x-1] - mu)^2), probs=c(0.05,0.95) ))
+}
+yCI_prior = sapply(2:length(train_set$Close), cal_vol_CI_arch_prior)
+```
+
+Subsequently, we attempt to carry out the prior predictive checks to inspect whether the priors cover the feasible values - the realized volatility.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting daily changes
+plot(t[-1], pc_dif, type='l', col='black', xlab='Date', ylab='Percentage Change (%)', main='Daily Percentage Changes in Gold Closing Prices')
+lines(t[-1], rep_len(pred_prior, length(pc_dif)), lty='solid', col='red', lwd=1)
+lines(t[-1], rep_len(-pred_prior, length(pc_dif)), lty='solid', col='red', lwd=1)
+polygon(x=c(t[-1], rev(t[-1]), t[2]), y=c(yCI_prior[1,], rev(yCI_prior[2,]),yCI_prior[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+polygon(x=c(t[-1], rev(t[-1]), t[2]), y=c(-yCI_prior[1,], rev(-yCI_prior[2,]),-yCI_prior[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+legend('topright', legend=c('True Return', 'Predicted Volatility'), col=c('black','red'), bty='n', lty='solid')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+volatility_plot <- function(date, realized, predicted, yCI) {
+  # Create a data frame for plotting
+  plot_data <- data.frame(
+    Date = date,
+    Realized_Volatility = realized,
+    Predicted_Volatility = predicted,
+    CI_Lower = yCI[1,],
+    CI_Upper = yCI[2,]
+  )
+  
+  ggplot(plot_data, aes(x = Date)) +
+    geom_point(aes(y = Realized_Volatility), color = 'black', alpha = 0.6) +
+    geom_line(aes(y = Predicted_Volatility), color = 'red') +
+    geom_ribbon(aes(ymin = CI_Lower, ymax = CI_Upper), fill = 'red', alpha = 0.2) +
+    labs(
+      title = 'Realized Volatility vs Predicted Volatility',
+      x = 'Date',
+      y = 'Volatility'
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      legend.position = 'topright'
+    ) +
+    scale_y_continuous(labels = scales::comma)
+}
+```
+
+```{r, , echo=FALSE, message=FALSE, warning=FALSE}
+volatility_plot(t[-1], train_set$Realized_Volatility[-1], pred_prior, yCI_prior)
+```
+From the plots, we can see that the priors chosen covers the feasible range well, suggesting that we can incorporate these priors in the model.
+
+# Week 3: Model Fitting and Checking
+
+## Goal
+
+After this week, you should have:
+
+-   Fitted your model with chosen priors to your data
+-   Performed diagnostic checks for quality/stability of fitting
+-   Performed prior sensitivity assessment
+-   Performed predictive performance assessment
+
+## ARCH model fitting and checking
+
+```{r,  echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# File path for the cached model
+cached_model_file <- 'cache/arch_model.rds'
+
+# Check if the cached model file exists
+if (file.exists(cached_model_file)) {
+  # Load the cached model
+  model <- readRDS(file = cached_model_file)
+} else {
+  # Compile the model
+  model <- cmdstan_model('model/arch.stan')
+  # Save the compiled model to a file
+  saveRDS(model, file = cached_model_file)
+}
+
+# Fit the model using the cached compiled model
+fit <- model$sample(
+  data = train_data,
+  chains = 4,
+  parallel_chains = 4,
+  refresh = 0
+)
+
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+#extract the parameters
+#params = extract(fit)
+#mu = mean(params$mu)
+#alpha0 = mean(params$alpha0)
+#alpha1 = mean(params$alpha1)
+
+# Extract the draws as a data frame
+draws <- fit$draws(format = "df")
+
+# Extract specific parameters
+mu_draws <- draws$mu
+alpha0_draws <- draws$alpha0
+alpha1_draws <- draws$alpha1
+
+mu <- mean(mu_draws)
+alpha0 <- mean(alpha0_draws)
+alpha1 <- mean(alpha1_draws)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Let's use our best fit model to predict the volatility from the previous day. 
+cal_vol_arch <- function(x) {
+  mu + sqrt(alpha0 + alpha1*(pc_dif[x-1] - mu)^2)
+}
+
+pred = sapply(2:length(train_set$Close), cal_vol_arch)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# get uncertainties
+cal_vol_CI_arch <- function(x) {
+  quantile(mu_draws + sqrt(alpha0_draws 
+            + alpha1_draws * (pc_dif[x-1] - mu_draws)^2
+            )
+            , probs=c(0.05,0.95) )
+  }
+yCI = sapply(2:length(train_set$Close), cal_vol_CI_arch)
+```
+
+## Likelihood Sensitivity Analysis
+
+Due to limited time and computational resources, we only carry out the likelihood power-scaling analysis, leaving out the prior power-scaling one.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+scaling_factors <- c(0.8, 1, 1.25)
+
+scaled_data <- lapply(scaling_factors, function(factor) {
+  scale <- train_set$pc_dif[-1] * factor
+  list(scale = scale, factor = factor)
+})
+
+fit_scaled_models <- lapply(scaled_data, function(data) {
+  # Prepare the data for Stan
+  train_data <- list(
+    T = length(data$scale) ,
+    r = data$scale
+  )
+  
+  # Fit the model
+  fit <- model$sample(
+    data = train_data,
+    chains = 4,
+    parallel_chains = 4,
+    refresh = 0, 
+    save_cmdstan_config=TRUE
+  )
+  
+  list(fit = fit, factor = data$factor)
+})
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Extract posterior samples
+posterior_samples <- lapply(fit_scaled_models, function(fit) {
+  samples <- as.matrix(fit$fit$draws(variables = "alpha1"))
+  data.frame(value = samples[, 1], factor = fit$factor)
+})
+
+# Combine samples into a single data frame
+posterior_df <- do.call(rbind, posterior_samples)
+
+# Define a function to create the density plot
+create_density_plot <- function(posterior_df, title) {
+  ggplot(posterior_df, aes(x = value, color = as.factor(factor))) +
+    geom_density(size = 0.8) +  # Increase line size for better visibility
+    labs(
+      title = title, 
+      x = "Alpha1", 
+      y = "Density", 
+      color = "Power-scaling alpha"
+    ) +
+    scale_color_manual(values = c("0.8" = "blue", "1" = "red", "1.25" = "black")) +  # Set specific colors
+    theme_minimal() +
+    xlim(0, 1) +
+    theme(
+      legend.position = "bottom",
+      legend.key.size = unit(0.4, "cm"),  # Adjust legend key size
+      legend.text = element_text(size = 10)  # Adjust legend text size
+    )
+}
+
+
+
+create_density_plot(posterior_df, "Likelihood power-scaling")
+```
+The posterior distribution of $\alpha_1$ is somewhat sensitive to the choice of scaling factor. This sensitivity is evident in the slight shifts in the peaks and the changes in the spread of the distributions.
+
+As the scaling factor increases (from 0.8 to 1.25), the variance of the posterior distribution appears to decrease slightly. This means the model becomes more confident in its estimate of $\alpha_1$ when the likelihood is given more weight.
+
+In conclusion, this suggests that the prior distribution may be playing a non-negligible role in shaping the posterior. 
+
+## Posterior Predictive Checks
+
+After fitting the model, we move on to evaluate how the model fit the data by plotting the predicted volatility over variability of the return. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Plotting daily changes
+plot(t[-1], pc_dif, type='l', col='black', xlab='Date', ylab='Percentage Change (%)', main='Daily Percentage Changes in Gold Closing Prices')
+lines(t[-1], pred, lty='solid', col='red', lwd=1)
+lines(t[-1], -pred, lty='solid', col='red', lwd=1)
+polygon(x=c(t[-1], rev(t[-1]), t[2]), y=c(yCI[1,], rev(yCI[2,]),yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+polygon(x=c(t[-1], rev(t[-1]), t[2]), y=c(-yCI[1,], rev(-yCI[2,]),-yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+legend('topright', legend=c('True Return', 'Predicted Volatility'), col=c('black','red'), bty='n', lty='solid')
+```
+
+We see that the model is a good fit, and the uncertainty is tiny. Please kindly note that they do not fit exactly because the black line and the red line are not showing exactly the same quantity. However, it is quite flat, which is common with ARCH models, and susceptible to bursts - spikes of volatility, which is not desirable.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+volatility_plot(t[-1], train_set$Realized_Volatility[-1], pred, yCI)
+```
+
+The predicted volatility and realized volatility show clear correlation. However, the gap between them is quite far and thus undesirable. This can be improved by incorporating previous volatility in the model, which will be introduced later on in the extended model.
+
+## Predictive Performance Visual Assessment
+
+Subsequently, we let the model predict the volatility on unseen testing data to evaluate its predictive performance.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+t <- test_set$Date
+pc_dif <- test_set$pc_dif
+
+# Generate predictions for the test set
+predict_arch <- function(x) {
+  return(mu + sqrt(alpha0 + alpha1 * (pc_dif[x] - mu)^2))
+}
+
+pred <- sapply(1:length(test_set$Close), predict_arch)
+pred_arch <- pred
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# get uncertainties
+cal_vol_CI_arch <- function(x) {
+  quantile(mu_draws + sqrt(alpha0_draws 
+            + alpha1_draws * (test_set$pc_dif[x] - mu_draws)^2
+            )
+            , probs=c(0.05,0.95) )
+  }
+yCI = sapply(1:length(test_set$Close), cal_vol_CI_arch)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting daily changes
+plot(t, pc_dif, type='l', col='black', xlab='Date', ylab='Percentage Change (%)', main='Daily Percentage Changes in Gold Closing Prices')
+lines(t, pred, lty='solid', col='red', lwd=1)
+lines(t, -pred, lty='solid', col='red', lwd=1)
+polygon(x=c(t, rev(t), t[1]), y=c(yCI[1,], rev(yCI[2,]),yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+polygon(x=c(t, rev(t), t[1]), y=c(-yCI[1,], rev(-yCI[2,]),-yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+legend('topright', legend=c('True Return', 'Predicted Volatility'), col=c('black','red'), bty='n', lty='solid')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+volatility_plot(test_set$Date, test_set$Realized_Volatility, pred, yCI)
+```
+The predicted volatility and realized volatility exhibit some correlation, indicating that the model is a good fit. The big gap between the predicted and realized volatility can be explained that the realized volatility is also just a proxy of true volatility -  intrinsic, underlying volatility of an asset that is not directly observable.
+
+The uncertainty is also wider, reflecting the fact that the model is forecasting on unseen testing set.
+
+## Convergence Diagnostics
+
+The convergence diagnostics ($\hat{R}$, ESS, divergence) for the ARCH model are all good.
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+fit$cmdstan_diagnose()
+```
+
+```{r, , echo=FALSE, message=FALSE, warning=FALSE}
+r_hat_model1 <- fit$summary()$rhat
+rhat_model1 <- mcmc_rhat_hist(r_hat_model1) + 
+  labs(title="Pooled model")  +
+  theme(plot.title = element_text(hjust = 0.5))
+rhat_model1
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Check for divergent transitions
+divergent_summary <- fit$diagnostic_summary()
+num_divergent <- sum(divergent_summary$num_divergent)
+cat("Number of divergent transitions:", num_divergent, "\n")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ess_plot <- function(model) {
+  ess_values <- model$summary()$ess_bulk
+  
+  ess_data <- data.frame(
+    ess = ess_values,
+    above_400 = ess_values > 400
+  )
+  
+  ggplot(ess_data, aes(x = ess, fill = above_400)) +
+    geom_histogram(binwidth = 1000, color = "black") +
+    scale_fill_manual(values = c("gray", "blue")) +
+    labs(
+      title = "Histogram of Effective Sample Sizes",
+      x = "Effective Sample Size",
+      y = "Count",
+      fill = "ESS > 400"
+    ) +
+    theme_minimal()
+    #theme(
+    #  plot.title = element_text(size = 20, hjust = 0.5), # Title text size
+    #  axis.title.x = element_text(size = 16), # X-axis title text size
+    #  axis.title.y = element_text(size = 16), # Y-axis title text size
+    #  axis.text.x = element_text(size = 14), # X-axis text size
+    #  axis.text.y = element_text(size = 14), # Y-axis text size
+    #  legend.title = element_text(size = 16), # Legend title text size
+    #  legend.text = element_text(size = 14)   # Legend text size
+    #)
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ess_model1 <- ess_plot(fit) +
+  labs(title="ARCH model")  +
+  theme(plot.title = element_text(hjust = 0.5))
+ess_model1
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, eval=FALSE}
+draws |>
+  mcmc_scatter(pars=c("alpha0","alpha1"), np = nuts_params(fit)) +
+  ggtitle("Scatter plot of alpha0 and alpha1")
+```
+
+# Week 4: Extending Models and Model Selection
+
+## Goal
+
+After this week, you should have:
+
+-   Decided on whether a model expansion or selection approach is relevant for your research question, with justification
+-   Proposed a second model (or an expansion to the first), building on the issues/diagnostics/concepts from previous weeks
+
+## GARCH Model
+
+A better way to model the heterogeneity is to use a generalized autoregressive conditional heteroskedasticity (GARCH) model. It is similar to the ARCH model, but it not only takes into account the previous data values, but also the previous volatility values. Therefore, this makes it less susceptible to bursts as the volatility is propagated over time.
+
+The series $\sigma_t$ is modeled by
+
+$$
+\sigma_t^2 = \alpha_0 + \sum_{i=1}^q \alpha_i \epsilon_{t-i}^2 + \sum_{i=1}^p \beta_i \sigma_{t-i}^2
+$$ 
+
+where $\alpha_0 > 0$, $\alpha_i \geq 0$, $\beta_i \geq 0$, $i > 0$.
+
+We only explore the GARCH[1] model in this project due to its simplicity. Therefore, the likelihood of the model would be
+
+$$
+r_i \sim \mathcal{N}\left(\mu, \sqrt{\alpha_0 + \alpha_1 * (r_{i-1} - \mu)^2 + \beta_1 *\sigma_{i-1}^2} \right) \quad\textsf{for}  \quad  i\in \{1, ..., t\}
+$$
+
+## Prior choices and justification
+
+The priors used and justification is similar to those in the ARCH Model.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+train_data = list(
+    T = length(train_set$pc_dif) - 1,
+    r = train_set$pc_dif[-1],
+    sigma1 = train_set$Realized_Volatility[1]
+)
+
+# File path for the cached model
+cached_garch <- 'cache/garch_model.rds'
+
+# Check if the cached model file exists
+if (file.exists(cached_garch)) {
+  # Load the cached model
+  model_garch <- readRDS(file = cached_garch)
+} else {
+  # Compile the model
+  model_garch <- cmdstan_model('model/garch.stan')
+  # Save the compiled model to a file
+  saveRDS(model_garch, file = cached_garch)
+}
+
+# Fit the model using the cached compiled model
+fit_garch <- model_garch$sample(
+  data = train_data,
+  chains = 4,
+  parallel_chains = 4,
+  refresh = 0
+)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+#extract the parameters
+#params = extract(fit)
+#mu = mean(params$mu)
+#alpha0 = mean(params$alpha0)
+#alpha1 = mean(params$alpha1)
+
+# Extract the draws as a data frame
+draws <- fit_garch$draws(format = "df")
+
+# Extract specific parameters
+mu_draws <- draws$mu
+alpha0_draws <- draws$alpha0
+alpha1_draws <- draws$alpha1
+beta1_draws <- draws$beta1
+sigma_draws <- as.matrix(draws[, 6:(length(draws) - 3)])
+
+mu <- mean(mu_draws)
+alpha0 <- mean(alpha0_draws)
+alpha1 <- mean(alpha1_draws)
+beta1 <- mean(beta1_draws)
+sigma <- colMeans(draws[, 6:(length(draws) - 3)])
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+t <- train_set$Date
+pc_dif <- train_set$pc_dif[-1]
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Let's use our best fit model to predict the volatility from the previous day. 
+cal_vol_garch <- function(x) {
+   mu + sqrt(alpha0 
+              + alpha1 * (pc_dif[x-1] - mu)^2
+              + beta1 * (sigma[x-1])^2)
+}
+
+pred = sapply(2:length(train_set$Close), cal_vol_garch)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+cal_vol_CI_garch <- function(x) {
+  quantile( mu_draws +
+    sqrt(
+      alpha0_draws +
+      alpha1_draws * (pc_dif[x-1] - mu_draws)^2 +
+      beta1_draws * (sigma_draws[,x-1])^2
+    ), 
+    probs = c(0.05, 0.95)
+  )
+}
+
+# Use sapply to apply the function over the desired range
+yCI <- sapply(2:length(train_set$Close), cal_vol_CI_garch)
+```
+
+## Likelihood Sensitivity Analysis
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide', include=FALSE}
+fit_scaled_models_garch <- lapply(scaled_data, function(data) {
+  # Prepare the data for Stan
+  train_data <- list(
+    T = length(data$scale),
+    r = data$scale,
+    sigma1 = train_set$Realized_Volatility[1]
+  )
+  
+  # Fit the model
+  fit <- model$sample(
+    data = train_data,
+    chains = 4,
+    parallel_chains = 4,
+    refresh = 0,
+    save_cmdstan_config=TRUE
+  )
+  
+  list(fit = fit, factor = data$factor)
+})
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Extract posterior samples
+posterior_samples_garch <- lapply(fit_scaled_models_garch, function(fit) {
+  samples <- as.matrix(fit$fit$draws(variables = "alpha1"))
+  data.frame(value = samples[, 1], factor = fit$factor)
+})
+
+# Combine samples into a single data frame
+posterior_df_garch <- do.call(rbind, posterior_samples_garch)
+
+create_density_plot(posterior_df_garch, "Likelihood power-scaling")
+```
+The posterior distribution of $\alpha_1$ shows a moderate degree of sensitivity to the likelihood power-scaling factor. This can be seen in the shifts in the peak density and the changes in the spread of the distributions.
+
+As the scaling factor increases, the variance of the posterior distribution decreases slightly. This means that the model becomes more confident in its estimate of $\alpha_1$ when the likelihood is given more weight. Additionally, the peak (mode) of the distribution shifts slightly towards higher values as the scaling factor increases, suggesting that the data supports a slightly larger value of $\alpha_1$ than the prior might have initially suggested.
+
+## Posterior Predictive Checks
+
+After fitting the model, we move on to evaluate how the model fit the data by plotting the predicted volatility over variability of the return. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting daily changes
+plot(t[-1], pc_dif, type='l', col='black', xlab='Date', ylab='Percentage Change (%)', main='Daily Percentage Changes in Gold Closing Prices')
+lines(t[-1], pred, lty='solid', col='red', lwd=1)
+lines(t[-1], -pred, lty='solid', col='red', lwd=1)
+polygon(x=c(t[-1], rev(t[-1]), t[2]), y=c(yCI[1,], rev(yCI[2,]),yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+polygon(x=c(t[-1], rev(t[-1]), t[2]), y=c(-yCI[1,], rev(-yCI[2,]),-yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+legend('topright', legend=c('True Return', 'Predicted Volatility'), col=c('black','red'), bty='n', lty='solid')
+```
+
+As depicted, we get a really nice correlation with the percentage changes. Compared with the ARCH model, the replicated volatility is now much smoother and closer-matching to the data. The uncertainty is also very tiny.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+volatility_plot(t[-1], train_set$Realized_Volatility[-1], pred, yCI)
+```
+
+As you may notice, the gap between the replicated volatility of GARCH model and the realized volatility is much shorter than that of ARCH model. 
+
+## Predictive Performance Visual Assessments
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+t <- test_set$Date
+pc_dif <- test_set$pc_dif
+pred <- rep(0, length(test_set$Realized_Volatility))
+sigma_test_draws <- rep(rep(0, length(mu_draws)), length(test_set$pc_dif) + 1)
+dim(sigma_test_draws) <- c(length(mu_draws), length(test_set$pc_dif) + 1)
+sigma_test_draws[,1] <-  sigma_draws[,303]
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+for (i in 1:length(test_set$Realized_Volatility)) {
+    sigma_test_draws[, i + 1] <- sqrt(
+      alpha0_draws +
+      alpha1_draws * (pc_dif[i] - mu_draws)^2 +
+      beta1_draws * (sigma_test_draws[, i])^2
+    )
+}
+
+sigma_test <- colMeans(sigma_test_draws)
+
+for (i in 1:length(test_set$Realized_Volatility)) {
+    if (i==1) {
+      pred[i] <- mu + sqrt(alpha0 
+              + alpha1 * (train_set$pc_dif[length(train_set$pc_dif)] - mu)^2
+              + beta1 * (sigma[length(sigma)])^2)
+    } else {
+      pred[i] <- mu + sqrt(alpha0 
+          + alpha1 * (pc_dif[i - 1] - mu)^2
+          + beta1 * (sigma_test[i - 1])^2)
+    }
+
+}
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cal_vol_CI_garch <- function(x) {
+  quantile(
+    mu_draws + sqrt(
+      alpha0_draws +
+      alpha1_draws * (pc_dif[x-1] - mu_draws)^2 +
+      beta1_draws * (sigma_test_draws[,x-1])^2
+    ), 
+    probs = c(0.05, 0.95)
+  )
+}
+
+# Use sapply to apply the function over the desired range
+yCI <- sapply(1:length(test_set$Close), cal_vol_CI_garch)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting daily changes
+plot(t, pc_dif, type='l', col='black', xlab='Date', ylab='Percentage Change (%)', main='Daily Percentage Changes in Gold Closing Prices')
+lines(t, pred, lty='solid', col='red', lwd=1)
+lines(t, -pred, lty='solid', col='red', lwd=1)
+polygon(x=c(t, rev(t), t[1]), y=c(yCI[1,], rev(yCI[2,]),yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+polygon(x=c(t, rev(t), t[1]), y=c(-yCI[1,], rev(-yCI[2,]),-yCI[1,1]),  col=rgb(1,0,0,0.1), border = NA) #plot envelope of uncertainties
+legend('topright', legend=c('True Return', 'Predicted Volatility'), col=c('black','red'), bty='n', lty='solid')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+volatility_plot(t, test_set$Realized_Volatility, pred, yCI)
+```
+
+The uncertainty of the predictions on testing set is now wider than that on training set, reflecting the fact that there should be more uncertainty on unseen data. The gap between on prediction volatility and realized volatility is also much shorter than that in ARCH Model.
+
+## Convergence Diagnostics
+
+The convergence diagnostics ($\hat{R}$, ESS, divergence) for the ARCH model are all good.
+
+```{r, , echo=FALSE, message=FALSE, warning=FALSE}
+fit_garch$cmdstan_diagnose()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+r_hat_model2 <- fit_garch$summary()$rhat
+rhat_model2 <- mcmc_rhat_hist(r_hat_model2) + 
+  labs(title="Pooled model")  +
+  theme(plot.title = element_text(hjust = 0.5))
+rhat_model2
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Check for divergent transitions
+divergent_summary <- fit_garch$diagnostic_summary()
+num_divergent <- sum(divergent_summary$num_divergent)
+cat("Number of divergent transitions:", num_divergent, "\n")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ess_model2 <- ess_plot(fit_garch) +
+  labs(title="GARCH model")  +
+  theme(plot.title = element_text(hjust = 0.5))
+ess_model2
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, eval=FALSE}
+draws |>
+  mcmc_scatter(pars=c("alpha0","alpha1"), np = nuts_params(fit_garch)) +
+  ggtitle("Scatter plot of alpha0 and alpha1")
+```
+
+# Week 5: Interpreting and Presenting Model Results
+
+## Goal
+
+After this week, you should have:
+
+-   Prepared a concise summary of your results and how they answer your research question
+-   Prepared a visualisation of your results that is suitable for presentation to a non-technical audience
+
+## Model Selection
+
+We will decide which model out of the two is in favor based on their predictive performances.
+
+## Forecast Evaluatoin   
+
+Our measure of predictive accuracy is based on the average forecast loss achieved by a model/strategy/proxy triplet. A model that provides a smaller average loss is more accurate and therefore preferred. Choices for loss functions are extensive, and their
+properties vary  Volatility forecast comparison can be tricky because forecasted values must be compared against an ex post proxy of volatility, rather than its true, latent value. Patton (2009) identiﬁes a class of loss functions that is attractively robust
+in the sense that they asymptotically generate the same ranking of models regardless of the proxy being used. The Patton class is comprised of a continuum of loss functions indexed by a param-
+eter on the real line. It rules out all but two losses traditionally used in the volatility forecasting literature:
+
+$$
+\begin{aligned}
+\text{QL:} \quad L(\hat{\sigma_t}, h_{t \mid t-k}) &= \frac{\sigma_t^2}{h_{t \mid t-k}} - \log \frac{\sigma_t^2}{h_{t\mid t-k}} -1 \\
+\text{MSE:} \quad L(\hat{\sigma_t}, h_{t \mid t-k}) &= \left(\sigma_t^2 -h_{t \mid t-k} \right)^2
+\end{aligned}
+$$
+where $\sigma_t^2$ is an unbiased ex post proxy of conditional variance (such as realized volatility or squared returns) and $h_{t\mid t-k}$ is a volatility forecast based on t - k information
+(k > 0). The quasi-likelihood (QL) loss, named for its close relation to the Gaussian likelihood, depends only on the multiplicative forecast error, $\frac{\sigma_t^2}{h_{t \mid t-k}}$. The mean
+squared error (MSE) loss depends solely on the additive forecast error, $\sigma_t^2 -h_{t \mid t-k}$.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Define the QL Loss function
+ql_loss <- function(actual, predicted) {
+  return(actual / predicted - log(actual / predicted) - 1)
+}
+
+# Calculate QL Loss for the ARCH model
+ql_arch <- ql_loss(test_set$Realized_Volatility, pred_arch)
+
+# Summary of QL Loss
+mean_ql_arch <- mean(ql_arch, na.rm = TRUE)
+mse_arch <- mean((test_set$Realized_Volatility - pred_arch)^2)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculate QL Loss for the GARCH model
+ql_garch <- ql_loss(test_set$Realized_Volatility, pred)
+
+# Summary of QL Loss
+mean_ql_garch <- mean(ql_garch, na.rm = TRUE)
+mse_garch <- mean((test_set$Realized_Volatility - pred)^2)
+```
+
+## Metrics Result
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+metrics_matrix <- function(mse_arch, mse_garch, mean_ql_arch, mean_ql_garch) {
+  matrix(c(mean_ql_arch, mse_arch, 
+           mean_ql_garch, mse_garch), 
+         nrow=2, 
+         dimnames=list(c("QL Loss", "MSE"),
+                       c("ARCH", "GARCH")))
+}
+metrics_matrix(mse_arch, mse_garch, mean_ql_arch, mean_ql_garch)
+```
+Since the GARCH model is performing better in terms of QL Loss and MSE error, we would select the GARCH model as the main model for practical uses and further development.
+
+## Conclusion
+
+In conclusion, after evaluate the performances of the two models, we are in favor of GARCH model is forecasting volatility better in terms of numerical metrics and visual assessments. 
+
+However, this model is not perfect and can be further developed by incorporating more lag terms in the model. We also can introduce a hierarchical structure on time periods as periods may have different random noises.
+
